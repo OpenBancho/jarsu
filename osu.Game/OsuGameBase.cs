@@ -78,9 +78,9 @@ namespace osu.Game
     public partial class OsuGameBase : Framework.Game, ICanAcceptFiles, IBeatSyncProvider
     {
 #if DEBUG
-        public const string GAME_NAME = "osu! (development)";
+        public const string GAME_NAME = "jarsu (development)";
 #else
-        public const string GAME_NAME = "osu!";
+        public const string GAME_NAME = "jarsu";
 #endif
 
         public const string OSU_PROTOCOL = "osu://";
@@ -283,6 +283,7 @@ namespace osu.Game
                 VersionHash = $"{Version}-{RuntimeInfo.OS}".ComputeMD5Hash();
             }
 
+            Resources.AddStore(new NamespacedResourceStore<byte[]>(new DllResourceStore(typeof(OsuGameBase).Assembly), @"Resources"));
             Resources.AddStore(new DllResourceStore(OsuResources.ResourceAssembly));
 
             dependencies.Cache(realm = new RealmAccess(Storage, CLIENT_DATABASE_FILENAME, Host.UpdateThread));

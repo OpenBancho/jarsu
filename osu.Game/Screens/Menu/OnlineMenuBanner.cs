@@ -24,7 +24,7 @@ namespace osu.Game.Screens.Menu
     {
         public double DelayBetweenRotation { get; set; } = 7500;
 
-        public bool FetchOnlineContent { get; set; } = true;
+        public bool FetchOnlineContent { get; set; } = false;
 
         internal Bindable<APIMenuContent> Current { get; } = new Bindable<APIMenuContent>(new APIMenuContent());
 
