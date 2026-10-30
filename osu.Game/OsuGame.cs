@@ -1087,7 +1087,7 @@ namespace osu.Game
             if (API is APIAccess api)
                 api.PostNotification = n => Notifications.Post(n);
 
-            osu.Game.Security.AntiCheatClient.CheckAndNotify(Notifications);
+            osu.Game.Security.AntiCheatClient.CheckAndNotify(Notifications, API);
 
             ScreenFooter.BackReceptor backReceptor;
 

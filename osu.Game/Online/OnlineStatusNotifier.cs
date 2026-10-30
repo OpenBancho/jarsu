@@ -142,7 +142,7 @@ namespace osu.Game.Online
             });
 
             if (notificationOverlay != null)
-                osu.Game.Security.AntiCheatClient.CheckAndNotify(notificationOverlay);
+                osu.Game.Security.AntiCheatClient.CheckAndNotify(notificationOverlay, api);
         }
 
         private void notifyApiDisconnection()

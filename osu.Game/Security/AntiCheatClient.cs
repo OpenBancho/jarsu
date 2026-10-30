@@ -3,8 +3,13 @@
 
 using System;
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
 using osu.Framework.Logging;
+using osu.Game.Online.API;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Notifications;
 
@@ -33,8 +38,70 @@ namespace osu.Game.Security
         private static bool hasNotified;
         private static INotificationOverlay? notificationOverlay;
 
-        public static void CheckAndNotify(INotificationOverlay notifications)
+        private static IAPIProvider? api;
+        private static readonly HttpClient report_client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        private const int report_max_attempts = 40;
+        private static readonly TimeSpan report_retry_delay = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Reports a detected violation to the game server configured in the client (the dev/production API endpoint).
+        /// Retries in the background until the user is logged in and the server acknowledges the report.
+        /// </summary>
+        private static void reportViolation(string reason)
         {
+            string code = reason.StartsWith("[IMAGE_TAMPER]", StringComparison.Ordinal) ? "image_tamper" : "violation";
+
+            Task.Run(async () =>
+            {
+                for (int attempt = 0; attempt < report_max_attempts; attempt++)
+                {
+                    try
+                    {
+                        var provider = api;
+                        string? token = provider?.AccessToken;
+
+                        if (provider != null && !string.IsNullOrEmpty(token))
+                        {
+                            string body = JsonConvert.SerializeObject(new
+                            {
+                                code,
+                                reason,
+                                client_version = typeof(AntiCheatClient).Assembly.GetName().Version?.ToString() ?? string.Empty,
+                            });
+
+                            using var request = new HttpRequestMessage(HttpMethod.Post, $"{provider.Endpoints.APIUrl}/api/v2/anticheat/report")
+                            {
+                                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+                            };
+                            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+                            using var response = await report_client.SendAsync(request).ConfigureAwait(false);
+
+                            if (response.IsSuccessStatusCode)
+                            {
+                                Logger.Log($"[AntiCheat] Violation '{code}' reported to server.", LoggingTarget.Runtime, LogLevel.Important);
+                                return;
+                            }
+
+                            // 429: rate limited, 401: token not valid yet; both are worth retrying.
+                            Logger.Log($"[AntiCheat] Violation report rejected: {(int)response.StatusCode}", LoggingTarget.Runtime, LogLevel.Error);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"[AntiCheat] Violation report failed: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
+                    }
+
+                    await Task.Delay(report_retry_delay).ConfigureAwait(false);
+                }
+            });
+        }
+
+        public static void CheckAndNotify(INotificationOverlay notifications, IAPIProvider? apiProvider = null)
+        {
+            if (apiProvider != null)
+                api = apiProvider;
+
             notificationOverlay = notifications;
             if (hasNotified) return;
             hasNotified = true;
@@ -94,6 +161,7 @@ namespace osu.Game.Security
                         {
                             LastSecurityError = violation;
                             Logger.Log($"[AntiCheat Alert]: {violation}", LoggingTarget.Runtime, LogLevel.Error);
+                            reportViolation(violation);
                             notifications.Post(new SimpleErrorNotification
                             {
                                 Text = $"[Security Violation]: {violation}",
