@@ -42,6 +42,8 @@ namespace osu.Game.Online.Rooms
 
             if (blockReason != null)
                 throw new System.Security.SecurityException($"Score submission blocked: {blockReason}");
+
+            osu.Game.Security.AntiCheatClient.ReportScore(ScoreId, BeatmapId, payload);
 #endif
 
             req.AddRaw(payload);

@@ -31,6 +31,7 @@ namespace osu.Game.Security
         public static string? LastSecurityError { get; private set; }
 
         private static MethodInfo? canSubmitScoreMethod;
+        private static MethodInfo? submitScoreMethod;
         private static bool hasNotified;
         private static INotificationOverlay? notificationOverlay;
 
@@ -100,6 +101,9 @@ namespace osu.Game.Security
                                       ?.Invoke(null, new object[] { new Func<string?>(() => provider.AccessToken) });
                         }
 
+                        canSubmitScoreMethod = moduleType?.GetMethod("CanSubmitScore", BindingFlags.Public | BindingFlags.Static);
+                        submitScoreMethod = moduleType?.GetMethod("SubmitScore", BindingFlags.Public | BindingFlags.Static);
+
                         Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
 
                         var regMethod = moduleType?.GetMethod("RegisterViolationCallback", BindingFlags.Public | BindingFlags.Static);
@@ -168,6 +172,24 @@ namespace osu.Game.Security
                 {
                     Logger.Log($"Failed to initialize test-cheat.dll: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Hands the score being submitted over to the anti-cheat module, which sends it to its own server.
+        /// </summary>
+        public static void ReportScore(long tokenId, int beatmapId, string payload)
+        {
+            if (!IsStrictBuild || !IsAntiCheatLoaded || submitScoreMethod == null)
+                return;
+
+            try
+            {
+                submitScoreMethod.Invoke(null, new object[] { tokenId, beatmapId, payload });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[AntiCheatClient] Score hand-over failed: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
             }
         }
 
