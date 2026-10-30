@@ -10,6 +10,9 @@
     <!-- https://github.com/dotnet/runtime/issues/129562 -->
     <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(StrictClient)' == 'true'">
+    <DefineConstants>$(DefineConstants);STRICT_CLIENT</DefineConstants>
+  </PropertyGroup>
   <PropertyGroup>
     <ApplicationManifest>$(MSBuildThisFileDirectory)app.manifest</ApplicationManifest>
   </PropertyGroup>

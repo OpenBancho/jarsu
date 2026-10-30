@@ -348,3 +348,14 @@ FodyWeavers.xsd
 # Local publish directory
 /publish/
 publish/
+
+# Strict anti-cheat binary
+**/anticheat.dll
+
+# Code signing certificates and private keys
+*.pfx
+*.p12
+*.key
+*.snk
+
+
