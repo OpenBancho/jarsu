@@ -216,8 +216,7 @@ namespace osu.Game.Online.API
                 AddParameter("fingerprint", ClientTelemetry.GetTelemetryJson());
 
 #if STRICT_CLIENT
-                // Strict build: announce it and present the anti-cheat login ticket (the non-strict build does neither).
-                AddParameter("ac_mode", "strict");
+                // Strict build: present the anti-cheat login ticket (the server decides whether it is needed).
                 string? ticket = osu.Game.Security.AntiCheatClient.GetLoginTicket(TicketUsername);
 
                 if (!string.IsNullOrEmpty(ticket))
