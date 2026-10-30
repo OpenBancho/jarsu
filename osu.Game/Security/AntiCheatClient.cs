@@ -30,7 +30,7 @@ namespace osu.Game.Security
         public static bool IsAntiCheatLoaded { get; private set; }
         public static string? LastSecurityError { get; private set; }
 
-        private static MethodInfo? secureAndEncryptScoreMethod;
+        private static MethodInfo? canSubmitScoreMethod;
         private static bool hasNotified;
         private static INotificationOverlay? notificationOverlay;
 
@@ -92,15 +92,14 @@ namespace osu.Game.Security
                     {
                         IsAntiCheatLoaded = true;
 
-                        // The module reports violations itself; the host only supplies the API root and the token.
+                        // The module talks to its own backend; the host only lets it identify the current player.
                         if (api != null)
                         {
                             var provider = api;
                             moduleType?.GetMethod("ConfigureServerContext", BindingFlags.Public | BindingFlags.Static)
-                                      ?.Invoke(null, new object[] { provider.Endpoints.APIUrl, new Func<string?>(() => provider.AccessToken) });
+                                      ?.Invoke(null, new object[] { new Func<string?>(() => provider.AccessToken) });
                         }
 
-                        secureAndEncryptScoreMethod = moduleType?.GetMethod("SecureAndEncryptScore", BindingFlags.Public | BindingFlags.Static);
                         Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
 
                         var regMethod = moduleType?.GetMethod("RegisterViolationCallback", BindingFlags.Public | BindingFlags.Static);
@@ -172,41 +171,25 @@ namespace osu.Game.Security
             }
         }
 
-        public static string? SecureAndEncryptScore(long scoreId, int beatmapId, int userId, string rawJson, string handshakeUrl, string? bearerToken)
+        /// <summary>
+        /// Asks the anti-cheat module whether a score may be submitted. Returns null when allowed, otherwise the reason.
+        /// </summary>
+        public static string? GetScoreSubmissionBlockReason()
         {
-            if (!IsStrictBuild || !IsAntiCheatLoaded || secureAndEncryptScoreMethod == null)
-            {
-                Logger.Log($"[AntiCheatClient] SecureAndEncryptScore aborted: IsStrictBuild={IsStrictBuild}, IsAntiCheatLoaded={IsAntiCheatLoaded}, methodNull={secureAndEncryptScoreMethod == null}", LoggingTarget.Runtime, LogLevel.Error);
+            if (!IsStrictBuild)
                 return null;
-            }
+
+            if (!IsAntiCheatLoaded || canSubmitScoreMethod == null)
+                return LastSecurityError ?? "Anti-cheat module is not loaded or signature verification failed.";
 
             try
             {
-                Logger.Log($"[AntiCheatClient] Executing SecureAndEncryptScore: scoreId={scoreId}, map={beatmapId}, user={userId}, url={handshakeUrl}", LoggingTarget.Runtime, LogLevel.Debug);
-                var result = secureAndEncryptScoreMethod.Invoke(null, new object?[] { scoreId, beatmapId, userId, rawJson, handshakeUrl, bearerToken }) as string;
-                if (result == null)
-                {
-                    var lastErrProp = secureAndEncryptScoreMethod.DeclaringType?.GetProperty("LastError");
-                    var lastErr = lastErrProp?.GetValue(null) as string;
-                    LastSecurityError = lastErr ?? "Score signing rejected by anti-cheat";
-                    Logger.Log($"[AntiCheatClient] SecureAndEncryptScore returned null! LastError: {LastSecurityError}", LoggingTarget.Runtime, LogLevel.Error);
-
-                    notificationOverlay?.Post(new SimpleErrorNotification
-                    {
-                        Text = $"[Security Violation]: Score rejected: {LastSecurityError}",
-                    });
-                }
-                return result;
+                return canSubmitScoreMethod.Invoke(null, null) as string;
             }
             catch (Exception ex)
             {
-                LastSecurityError = ex.Message;
-                Logger.Log($"[AntiCheatClient] Secure score encryption failed: {ex}", LoggingTarget.Runtime, LogLevel.Error);
-                notificationOverlay?.Post(new SimpleErrorNotification
-                {
-                    Text = $"[Security Violation]: Score encryption failed: {ex.Message}",
-                });
-                return null;
+                Logger.Log($"[AntiCheatClient] Score gate failed: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
+                return ex.Message;
             }
         }
     }
