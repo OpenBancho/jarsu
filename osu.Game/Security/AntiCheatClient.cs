@@ -3,7 +3,10 @@
 
 using System;
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using osu.Framework.Logging;
 using osu.Game.Online.API;
 using osu.Game.Overlays;
@@ -35,6 +38,17 @@ namespace osu.Game.Security
         private static MethodInfo? getLoginTicketMethod;
         private static bool hasNotified;
         private static volatile bool loadFinished;
+
+        private enum ServerMode
+        {
+            Unknown,
+            Strict,
+            NonStrict,
+        }
+
+        // The game server decides whether the anti-cheat is used at all (CLIENT_MODE of the server).
+        private static volatile ServerMode serverMode = ServerMode.Unknown;
+        private static readonly HttpClient mode_client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         private static INotificationOverlay? notificationOverlay;
 
         private static IAPIProvider? api;
@@ -47,14 +61,61 @@ namespace osu.Game.Security
             if (hasNotified) return;
             hasNotified = true;
 
-            try
+            if (!IsStrictBuild)
             {
+                // Non-strict build: only notes that a module is present and ignores it.
                 loadAndNotify(notifications);
-            }
-            finally
-            {
                 loadFinished = true;
+                return;
             }
+
+            // Strict build: ask the server first. On a nonstrict server the module is not even loaded,
+            // so there is no handshake, no checks and no contact with the anti-cheat server.
+            string? apiUrl = api?.Endpoints.APIUrl;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    serverMode = apiUrl == null ? ServerMode.Unknown : resolveServerMode(apiUrl, 10);
+
+                    if (serverMode == ServerMode.Strict)
+                        loadAndNotify(notifications);
+                    else if (serverMode == ServerMode.NonStrict)
+                        Logger.Log("Server is nonstrict: the anti-cheat module is not loaded and not used.", LoggingTarget.Runtime, LogLevel.Important);
+                    else
+                        Logger.Log("Could not determine the server's client mode.", LoggingTarget.Runtime, LogLevel.Error);
+                }
+                finally
+                {
+                    loadFinished = true;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Reads the server's client mode from its public API info route. A server that does not report one does not use the anti-cheat.
+        /// </summary>
+        private static ServerMode resolveServerMode(string apiUrl, int attempts)
+        {
+            for (int i = 0; i < attempts; i++)
+            {
+                try
+                {
+                    string json = mode_client.GetStringAsync($"{apiUrl.TrimEnd('/')}/api/v2").GetAwaiter().GetResult();
+                    string? mode = JObject.Parse(json).Value<string>("client_mode");
+
+                    return string.Equals(mode, "strict", StringComparison.OrdinalIgnoreCase) ? ServerMode.Strict : ServerMode.NonStrict;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Server mode lookup failed (attempt {i + 1}): {ex.Message}", LoggingTarget.Runtime, LogLevel.Debug);
+                }
+
+                System.Threading.Thread.Sleep(3000);
+            }
+
+            return ServerMode.Unknown;
         }
 
         private static void loadAndNotify(INotificationOverlay notifications)
@@ -204,7 +265,7 @@ namespace osu.Game.Security
             for (int i = 0; i < 300 && !loadFinished; i++)
                 System.Threading.Thread.Sleep(100);
 
-            if (!IsAntiCheatLoaded || getLoginTicketMethod == null)
+            if (serverMode != ServerMode.Strict || !IsAntiCheatLoaded || getLoginTicketMethod == null)
                 return null;
 
             try
@@ -223,7 +284,7 @@ namespace osu.Game.Security
         /// </summary>
         public static void ReportScore(long tokenId, int beatmapId, string payload)
         {
-            if (!IsStrictBuild || !IsAntiCheatLoaded || submitScoreMethod == null)
+            if (!IsStrictBuild || serverMode != ServerMode.Strict || !IsAntiCheatLoaded || submitScoreMethod == null)
                 return;
 
             try
@@ -241,7 +302,8 @@ namespace osu.Game.Security
         /// </summary>
         public static string? GetScoreSubmissionBlockReason()
         {
-            if (!IsStrictBuild)
+            // A nonstrict server does not use the anti-cheat: nothing gates the score.
+            if (!IsStrictBuild || serverMode == ServerMode.NonStrict)
                 return null;
 
             if (!IsAntiCheatLoaded || canSubmitScoreMethod == null)
