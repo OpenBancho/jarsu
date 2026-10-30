@@ -38,6 +38,7 @@ namespace osu.Game.Security
         private static MethodInfo? getLoginTicketMethod;
         private static bool hasNotified;
         private static volatile bool loadFinished;
+        private static FileStream? dllGuard;
 
         private enum ServerMode
         {
@@ -147,6 +148,19 @@ namespace osu.Game.Security
             // 2. Verify anticheat.dll signature before loading
             if (dllExists)
             {
+                // Keep the file open for reading (nobody can write to it or swap it) from the signature check until the
+                // process ends, so the file that was verified is the file that gets loaded.
+                try
+                {
+                    dllGuard = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                }
+                catch (Exception ex)
+                {
+                    LastSecurityError = $"anticheat.dll could not be locked for verification: {ex.Message}";
+                    Logger.Log($"[AntiCheat Security Alert] {LastSecurityError}", LoggingTarget.Runtime, LogLevel.Error);
+                    return;
+                }
+
                 if (!AuthenticodeValidator.ValidateBinarySignature(dllPath, out string dllSigErr))
                 {
                     LastSecurityError = $"anticheat.dll signature rejected: {dllSigErr}";
