@@ -32,7 +32,9 @@ namespace osu.Game.Security
 
         private static MethodInfo? canSubmitScoreMethod;
         private static MethodInfo? submitScoreMethod;
+        private static MethodInfo? getLoginTicketMethod;
         private static bool hasNotified;
+        private static volatile bool loadFinished;
         private static INotificationOverlay? notificationOverlay;
 
         private static IAPIProvider? api;
@@ -44,6 +46,19 @@ namespace osu.Game.Security
             notificationOverlay = notifications;
             if (hasNotified) return;
             hasNotified = true;
+
+            try
+            {
+                loadAndNotify(notifications);
+            }
+            finally
+            {
+                loadFinished = true;
+            }
+        }
+
+        private static void loadAndNotify(INotificationOverlay notifications)
+        {
 
             string dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dll_name);
             bool dllExists = File.Exists(dllPath);
@@ -103,6 +118,7 @@ namespace osu.Game.Security
 
                         canSubmitScoreMethod = moduleType?.GetMethod("CanSubmitScore", BindingFlags.Public | BindingFlags.Static);
                         submitScoreMethod = moduleType?.GetMethod("SubmitScore", BindingFlags.Public | BindingFlags.Static);
+                        getLoginTicketMethod = moduleType?.GetMethod("GetLoginTicket", BindingFlags.Public | BindingFlags.Static);
 
                         Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
 
@@ -172,6 +188,33 @@ namespace osu.Game.Security
                 {
                     Logger.Log($"Failed to initialize test-cheat.dll: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Anti-cheat handshake for the login: the module obtains a ticket from the anti-cheat server which the game
+        /// server requires from this (strict) client. Returns null when there is no working anti-cheat module.
+        /// </summary>
+        public static string? GetLoginTicket(string? username)
+        {
+            if (!IsStrictBuild)
+                return null;
+
+            // The API may start logging in before the game has tried to load the module; wait for that attempt.
+            for (int i = 0; i < 300 && !loadFinished; i++)
+                System.Threading.Thread.Sleep(100);
+
+            if (!IsAntiCheatLoaded || getLoginTicketMethod == null)
+                return null;
+
+            try
+            {
+                return getLoginTicketMethod.Invoke(null, new object?[] { username }) as string;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[AntiCheatClient] Login handshake failed: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
+                return null;
             }
         }
 

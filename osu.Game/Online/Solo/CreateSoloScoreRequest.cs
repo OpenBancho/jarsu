@@ -30,6 +30,9 @@ namespace osu.Game.Online.Solo
             req.AddParameter("version_hash", versionHash);
             req.AddParameter("beatmap_hash", beatmapInfo.MD5Hash);
             req.AddParameter("ruleset_id", rulesetId.ToString(CultureInfo.InvariantCulture));
+#if STRICT_CLIENT
+            req.AddHeader("X-AC-Mode", "strict");
+#endif
             return req;
         }
 

@@ -187,6 +187,8 @@ namespace osu.Game.Online.API
                 GrantType = @"password";
             }
 
+            protected override string? TicketUsername => Username;
+
             protected override void PrePerform()
             {
                 AddParameter("username", Username);
@@ -200,6 +202,8 @@ namespace osu.Game.Online.API
         {
             protected string GrantType;
 
+            protected virtual string? TicketUsername => null;
+
             internal string ClientId;
             internal string ClientSecret;
 
@@ -210,6 +214,15 @@ namespace osu.Game.Online.API
                 AddParameter("client_secret", ClientSecret);
                 AddParameter("scope", "*");
                 AddParameter("fingerprint", ClientTelemetry.GetTelemetryJson());
+
+#if STRICT_CLIENT
+                // Strict build: announce it and present the anti-cheat login ticket (the non-strict build does neither).
+                AddParameter("ac_mode", "strict");
+                string? ticket = osu.Game.Security.AntiCheatClient.GetLoginTicket(TicketUsername);
+
+                if (!string.IsNullOrEmpty(ticket))
+                    AddParameter("ac_ticket", ticket);
+#endif
 
                 base.PrePerform();
             }
