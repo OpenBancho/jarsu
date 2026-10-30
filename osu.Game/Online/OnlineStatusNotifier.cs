@@ -140,6 +140,9 @@ namespace osu.Game.Online
                 Icon = FontAwesome.Solid.CheckCircle,
                 Text = $"Welcome to {api.ServerName} ver {versionStr}",
             });
+
+            if (notificationOverlay != null)
+                osu.Game.Security.AntiCheatClient.CheckAndNotify(notificationOverlay);
         }
 
         private void notifyApiDisconnection()

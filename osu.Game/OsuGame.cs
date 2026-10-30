@@ -1087,6 +1087,8 @@ namespace osu.Game
             if (API is APIAccess api)
                 api.PostNotification = n => Notifications.Post(n);
 
+            osu.Game.Security.AntiCheatClient.CheckAndNotify(Notifications);
+
             ScreenFooter.BackReceptor backReceptor;
 
             dependencies.CacheAs(idleTracker = new GameIdleTracker(6000));
