@@ -5,6 +5,7 @@ using System;
 using System.IO;
 using System.Runtime.Versioning;
 using osu.Desktop.LegacyIpc;
+using osu.Game.Security;
 using osu.Desktop.Windows;
 using osu.Framework;
 using osu.Framework.Development;
@@ -136,6 +137,10 @@ namespace osu.Desktop
                         Logger.Error(ex, "Failed to start legacy IPC provider");
                     }
                 }
+
+                // Load anticheat.dll before any game UI exists. The OpenWatcher launch window belongs to the DLL and is shown by it.
+                if (!tournamentClient && host.IsPrimaryInstance && AntiCheatClient.IsStrictBuild)
+                    AntiCheatClient.Preload();
 
                 if (tournamentClient)
                     host.Run(new TournamentGame());

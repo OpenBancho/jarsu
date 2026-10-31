@@ -119,14 +119,46 @@ namespace osu.Game.Security
             return ServerMode.Unknown;
         }
 
-        private static void loadAndNotify(INotificationOverlay notifications)
+        private static readonly System.Collections.Generic.List<string> pending_errors = new();
+        private static readonly object load_lock = new();
+        private static bool moduleLoadAttempted;
+        private static Type? loadedModuleType;
+
+        /// <summary>
+        /// Loads and initialises the anti-cheat module before the game UI exists (used by the launch splash).
+        /// Safe to call more than once; failures are kept and shown as notifications once the UI is up.
+        /// </summary>
+        /// <param name="progress">Receives short human-readable status lines.</param>
+        /// <returns>Whether the module is loaded and running.</returns>
+        public static bool Preload(Action<string>? progress = null)
         {
+            lock (load_lock)
+            {
+                loadModule(progress);
+                return IsAntiCheatLoaded;
+            }
+        }
+
+        private static void fail(string message)
+        {
+            LastSecurityError = message;
+            pending_errors.Add(message);
+            Logger.Log($"[AntiCheat Security Alert] {message}", LoggingTarget.Runtime, LogLevel.Error);
+        }
+
+        private static void loadModule(Action<string>? progress)
+        {
+            if (moduleLoadAttempted)
+                return;
+
+            moduleLoadAttempted = true;
 
             string dllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dll_name);
             bool dllExists = File.Exists(dllPath);
 
 #if STRICT_CLIENT
             // 1. Verify host game executable signature
+            progress?.Invoke("Verifying game files...");
             string? hostExe = Environment.ProcessPath ?? System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
             if (!string.IsNullOrEmpty(hostExe) && File.Exists(hostExe))
             {
@@ -135,115 +167,106 @@ namespace osu.Game.Security
                                    string.Equals(hostName, "dotnet.exe", StringComparison.OrdinalIgnoreCase);
 
                 if (!isDevRunner && !AuthenticodeValidator.ValidateBinarySignature(hostExe, out string hostSigErr))
-                {
-                    LastSecurityError = $"Game executable signature rejected: {hostSigErr}";
-                    Logger.Log($"[AntiCheat Security Alert] {LastSecurityError}", LoggingTarget.Runtime, LogLevel.Error);
-                    notifications.Post(new SimpleErrorNotification
-                    {
-                        Text = $"[Security Violation]: Game executable signature rejected ({hostSigErr}). Scores will be blocked.",
-                    });
-                }
+                    fail($"Game executable signature rejected: {hostSigErr}");
             }
 
             // 2. Verify anticheat.dll signature before loading
-            if (dllExists)
+            if (!dllExists)
             {
-                // Keep the file open for reading (nobody can write to it or swap it) from the signature check until the
-                // process ends, so the file that was verified is the file that gets loaded.
-                try
+                fail("STRICT client requires the anti-cheat module (anticheat.dll). Please place it in the game directory.");
+                return;
+            }
+
+            progress?.Invoke("Verifying anti-cheat module...");
+
+            // Keep the file open for reading (nobody can write to it or swap it) from the signature check until the
+            // process ends, so the file that was verified is the file that gets loaded.
+            try
+            {
+                dllGuard = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+            catch (Exception ex)
+            {
+                fail($"anticheat.dll could not be locked for verification: {ex.Message}");
+                return;
+            }
+
+            if (!AuthenticodeValidator.ValidateBinarySignature(dllPath, out string dllSigErr))
+            {
+                fail($"anticheat.dll signature rejected: {dllSigErr}");
+                return;
+            }
+
+            try
+            {
+                progress?.Invoke("Starting OpenWatcher...");
+
+                var assembly = Assembly.LoadFrom(dllPath);
+                var moduleType = assembly.GetType("osu.AntiCheat.AntiCheatModule");
+                var initMethod = moduleType?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static);
+                bool? result = initMethod?.Invoke(null, null) as bool?;
+
+                if (result == true)
                 {
-                    dllGuard = new FileStream(dllPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    IsAntiCheatLoaded = true;
+                    loadedModuleType = moduleType;
+
+                    canSubmitScoreMethod = moduleType?.GetMethod("CanSubmitScore", BindingFlags.Public | BindingFlags.Static);
+                    submitScoreMethod = moduleType?.GetMethod("SubmitScore", BindingFlags.Public | BindingFlags.Static);
+                    getLoginTicketMethod = moduleType?.GetMethod("GetLoginTicket", BindingFlags.Public | BindingFlags.Static);
+
+                    Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
                 }
-                catch (Exception ex)
+                else
                 {
-                    LastSecurityError = $"anticheat.dll could not be locked for verification: {ex.Message}";
-                    Logger.Log($"[AntiCheat Security Alert] {LastSecurityError}", LoggingTarget.Runtime, LogLevel.Error);
-                    return;
-                }
-
-                if (!AuthenticodeValidator.ValidateBinarySignature(dllPath, out string dllSigErr))
-                {
-                    LastSecurityError = $"anticheat.dll signature rejected: {dllSigErr}";
-                    Logger.Log($"[AntiCheat Security Alert] {LastSecurityError}", LoggingTarget.Runtime, LogLevel.Error);
-                    notifications.Post(new SimpleErrorNotification
-                    {
-                        Text = $"[Security Violation]: anticheat.dll signature rejected ({dllSigErr}). Scores will be blocked.",
-                    });
-                    return;
-                }
-
-                try
-                {
-                    var assembly = Assembly.LoadFrom(dllPath);
-                    var moduleType = assembly.GetType("osu.AntiCheat.AntiCheatModule");
-                    var initMethod = moduleType?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static);
-                    bool? result = initMethod?.Invoke(null, null) as bool?;
-
-                    if (result == true)
-                    {
-                        IsAntiCheatLoaded = true;
-
-                        // The module talks to its own backend; the host only lets it identify the current player.
-                        if (api != null)
-                        {
-                            var provider = api;
-                            moduleType?.GetMethod("ConfigureServerContext", BindingFlags.Public | BindingFlags.Static)
-                                      ?.Invoke(null, new object[] { new Func<string?>(() => provider.AccessToken) });
-                        }
-
-                        canSubmitScoreMethod = moduleType?.GetMethod("CanSubmitScore", BindingFlags.Public | BindingFlags.Static);
-                        submitScoreMethod = moduleType?.GetMethod("SubmitScore", BindingFlags.Public | BindingFlags.Static);
-                        getLoginTicketMethod = moduleType?.GetMethod("GetLoginTicket", BindingFlags.Public | BindingFlags.Static);
-
-                        Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
-
-                        var regMethod = moduleType?.GetMethod("RegisterViolationCallback", BindingFlags.Public | BindingFlags.Static);
-                        regMethod?.Invoke(null, new object[] { new Action<string>(violation =>
-                        {
-                            LastSecurityError = violation;
-                            Logger.Log($"[AntiCheat Alert]: {violation}", LoggingTarget.Runtime, LogLevel.Error);
-                            notifications.Post(new SimpleErrorNotification
-                            {
-                                Text = $"[Security Violation]: {violation}",
-                            });
-                        })});
-                    }
-                    else
-                    {
-                        LastSecurityError = "Anti-cheat module initialization failed.";
-                        Logger.Log(LastSecurityError, LoggingTarget.Runtime, LogLevel.Error);
-                        notifications.Post(new SimpleErrorNotification
-                        {
-                            Text = LastSecurityError,
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LastSecurityError = $"Failed to load anti-cheat module: {ex.Message}";
-                    Logger.Log(LastSecurityError, LoggingTarget.Runtime, LogLevel.Error);
-                    notifications.Post(new SimpleErrorNotification
-                    {
-                        Text = LastSecurityError,
-                    });
+                    fail("Anti-cheat module initialization failed.");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                LastSecurityError = "STRICT client requires the anti-cheat module (anticheat.dll). Please place it in the game directory.";
-                Logger.Log("STRICT client started without anticheat.dll", LoggingTarget.Runtime, LogLevel.Important);
-                notifications.Post(new SimpleErrorNotification
-                {
-                    Text = LastSecurityError,
-                });
+                fail($"Failed to load anti-cheat module: {ex.Message}");
             }
 #else
             // NON-STRICT client
             if (dllExists)
-            {
                 Logger.Log("anticheat.dll detected in non-strict client; ignoring.", LoggingTarget.Runtime, LogLevel.Debug);
-            }
 #endif
+        }
+
+        private static void loadAndNotify(INotificationOverlay notifications)
+        {
+            lock (load_lock)
+            {
+                // No-op when the launch splash already loaded the module.
+                loadModule(null);
+
+                foreach (string error in pending_errors)
+                    notifications.Post(new SimpleErrorNotification { Text = IsStrictBuild ? $"[Security Violation]: {error}" : error });
+
+                pending_errors.Clear();
+
+                if (IsAntiCheatLoaded && loadedModuleType != null)
+                {
+                    // The module talks to its own backend; the host only lets it identify the current player.
+                    if (api != null)
+                    {
+                        var provider = api;
+                        loadedModuleType.GetMethod("ConfigureServerContext", BindingFlags.Public | BindingFlags.Static)
+                                        ?.Invoke(null, new object[] { new Func<string?>(() => provider.AccessToken) });
+                    }
+
+                    var regMethod = loadedModuleType.GetMethod("RegisterViolationCallback", BindingFlags.Public | BindingFlags.Static);
+                    regMethod?.Invoke(null, new object[] { new Action<string>(violation =>
+                    {
+                        LastSecurityError = violation;
+                        Logger.Log($"[AntiCheat Alert]: {violation}", LoggingTarget.Runtime, LogLevel.Error);
+                        notifications.Post(new SimpleErrorNotification
+                        {
+                            Text = $"[Security Violation]: {violation}",
+                        });
+                    })});
+                }
+            }
 
             // Check for optional test/audit payload (test-cheat.dll)
             string testCheatDllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "test-cheat.dll");
