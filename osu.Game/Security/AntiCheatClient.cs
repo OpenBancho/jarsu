@@ -251,6 +251,13 @@ namespace osu.Game.Security
                     if (api != null)
                     {
                         var provider = api;
+
+                        // Which game server this is: one anti-cheat serves many, and it asks only this one about the player's
+                        // token. Set before the token provider so that the very first request already carries it. A module
+                        // without the method (an older anticheat.dll) simply ignores this.
+                        loadedModuleType.GetMethod("ConfigureServer", BindingFlags.Public | BindingFlags.Static)
+                                        ?.Invoke(null, new object?[] { provider.Endpoints.APIUrl });
+
                         loadedModuleType.GetMethod("ConfigureServerContext", BindingFlags.Public | BindingFlags.Static)
                                         ?.Invoke(null, new object[] { new Func<string?>(() => provider.AccessToken) });
                     }

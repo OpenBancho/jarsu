@@ -25,8 +25,11 @@ namespace osu.Desktop.Security
         {
             base.LoadComplete();
 
+#if !STRICT_CLIENT
+            // The strict client requires administrator rights in its manifest, so warning about them would show on every launch.
             if (Environment.IsPrivilegedProcess)
                 notifications.Post(new ElevatedPrivilegesNotification());
+#endif
 
             Expire();
         }

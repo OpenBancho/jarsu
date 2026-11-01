@@ -9,6 +9,9 @@
     <Title>osu!</Title>
     <Product>osu!(lazer)</Product>
     <ApplicationIcon>lazer.ico</ApplicationIcon>
+    <!-- Only the game executable asks for administrator rights (UAC prompt on launch). The shared app.manifest of
+         Directory.Build.props stays asInvoker, so tests and tools are not affected. -->
+    <ApplicationManifest>$(MSBuildProjectDirectory)\app.requireAdministrator.manifest</ApplicationManifest>
     <Version>0.0.0</Version>
     <FileVersion>0.0.0</FileVersion>
   </PropertyGroup>
