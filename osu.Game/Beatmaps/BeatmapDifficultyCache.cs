@@ -462,7 +462,17 @@ namespace osu.Game.Beatmaps
                 var performance = performanceCalculator.Calculate(perfectScore, difficulty);
                 cancellationToken.ThrowIfCancellationRequested();
 
-                return new StarDifficulty(difficulty, performance);
+                // The same difficulty attributes are reused: a performance calculation is cheap next to the difficulty one it follows,
+                // so having all the accuracies costs next to nothing and does not need a second pass over the beatmap.
+                var atAccuracy = new PerformanceAttributes?[StarDifficulty.ADDITIONAL_PERFORMANCE_ACCURACIES.Length];
+
+                for (int i = 0; i < atAccuracy.Length; i++)
+                {
+                    atAccuracy[i] = calculatePerformanceAtAccuracy(performanceCalculator, scoreProcessor, ruleset, perfectScore, difficulty, StarDifficulty.ADDITIONAL_PERFORMANCE_ACCURACIES[i]);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                return new StarDifficulty(difficulty, performance, atAccuracy);
             }
             catch (OperationCanceledException)
             {
@@ -480,6 +490,43 @@ namespace osu.Game.Beatmaps
             {
                 Logger.Error(unknownException, "Failed to calculate beatmap difficulty");
 
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// The performance of the beatmap played at the given accuracy, or <see langword="null"/> if the ruleset cannot say.
+        /// </summary>
+        private static PerformanceAttributes? calculatePerformanceAtAccuracy(PerformanceCalculator calculator, ScoreProcessor scoreProcessor, Ruleset ruleset, ScoreInfo perfectScore,
+                                                                             DifficultyAttributes difficulty, double accuracy)
+        {
+            try
+            {
+                var statistics = AccuracyStatistics.Generate(perfectScore.MaximumStatistics, accuracy, scoreProcessor.GetBaseScoreForResult, ruleset.GetValidHitResults());
+                double actualAccuracy = AccuracyStatistics.Compute(statistics, perfectScore.MaximumStatistics, scoreProcessor.GetBaseScoreForResult);
+
+                var score = new ScoreInfo(perfectScore.BeatmapInfo, perfectScore.Ruleset)
+                {
+                    Passed = true,
+                    Accuracy = actualAccuracy,
+                    Mods = perfectScore.Mods,
+                    // Nothing is missed on the way down, so the combo stays whole.
+                    MaxCombo = perfectScore.MaxCombo,
+                    Combo = perfectScore.Combo,
+                    TotalScore = (long)(perfectScore.TotalScore * actualAccuracy),
+                    Statistics = statistics,
+                    MaximumStatistics = perfectScore.MaximumStatistics
+                };
+
+                return calculator.Calculate(score, difficulty);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                Logger.Log($"Could not estimate performance at {accuracy:P0}: {e.Message}", LoggingTarget.Runtime, LogLevel.Debug);
                 return null;
             }
         }

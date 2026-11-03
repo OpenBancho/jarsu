@@ -42,7 +42,7 @@ namespace osu.Game.Screens.Select
         private PanelLocalRankDisplay localRank = null!;
         private OsuSpriteText difficultyText = null!;
         private OsuSpriteText authorText = null!;
-        private SpriteTextWithTooltip performanceText = null!;
+        private PanelPerformanceDisplay performanceDisplay = null!;
         private FillFlowContainer mainFill = null!;
 
         private IBindable<StarDifficulty>? starDifficultyBindable;
@@ -163,17 +163,13 @@ namespace osu.Game.Screens.Select
                                             Anchor = Anchor.BottomLeft,
                                             Origin = Anchor.BottomLeft
                                         },
-                                        // What a perfect play of this difficulty is worth with the selected mods. Filled in lazily,
+                                        // What this difficulty is worth at 100% / 95% / 90% accuracy with the selected mods. Filled in lazily,
                                         // from the same calculation that produces the star rating (see BeatmapDifficultyCache).
-                                        performanceText = new SpriteTextWithTooltip
+                                        performanceDisplay = new PanelPerformanceDisplay
                                         {
-                                            Colour = colourProvider.Content2,
-                                            Font = OsuFont.Style.Caption1.With(weight: FontWeight.SemiBold),
                                             Anchor = Anchor.BottomLeft,
                                             Origin = Anchor.BottomLeft,
                                             Margin = new MarginPadding { Left = 8f },
-                                            TooltipText = "Performance of a perfect play (SS) with the selected mods",
-                                            Alpha = 0,
                                         }
                                     }
                                 },
@@ -260,26 +256,8 @@ namespace osu.Game.Screens.Select
             {
                 starRatingDisplay.Current.Value = starDifficulty.NewValue;
                 starCounter.Current = (float)starDifficulty.NewValue.Stars;
-                updatePerformance(starDifficulty.NewValue);
+                performanceDisplay.SetDifficulty(starDifficulty.NewValue);
             }, true);
-        }
-
-        /// <summary>
-        /// Shows the performance of a perfect play after the author. Stays hidden until the calculation of this difficulty has produced it,
-        /// so a difficulty that was never calculated shows nothing instead of a made-up number.
-        /// </summary>
-        private void updatePerformance(StarDifficulty difficulty)
-        {
-            double? total = difficulty.PerformanceAttributes?.Total;
-
-            if (total == null || !double.IsFinite(total.Value) || total.Value <= 0)
-            {
-                performanceText.FadeOut(100);
-                return;
-            }
-
-            performanceText.Text = LocalisableString.Interpolate($"{total.Value:N0}pp");
-            performanceText.FadeIn(200);
         }
 
         protected override void Update()

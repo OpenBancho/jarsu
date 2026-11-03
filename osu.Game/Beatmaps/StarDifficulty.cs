@@ -31,6 +31,28 @@ namespace osu.Game.Beatmaps
         public readonly PerformanceAttributes? PerformanceAttributes;
 
         /// <summary>
+        /// The accuracies, besides a perfect play, that performance is also calculated for, in the order of
+        /// <see cref="PerformanceAttributesAtAccuracy"/>.
+        /// </summary>
+        public static readonly double[] ADDITIONAL_PERFORMANCE_ACCURACIES = { 0.95, 0.90 };
+
+        /// <summary>
+        /// The performance attributes of a play with no misses beyond what the accuracy demands, one per entry of <see cref="ADDITIONAL_PERFORMANCE_ACCURACIES"/>
+        /// (95% and 90%). Estimates: see <see cref="Rulesets.Scoring.AccuracyStatistics"/>.
+        /// <see langword="null"/> when they could not be calculated.
+        /// </summary>
+        public readonly PerformanceAttributes?[]? PerformanceAttributesAtAccuracy;
+
+        /// <summary>
+        /// Creates a <see cref="StarDifficulty"/> structure with the performance of a perfect play and of plays at lower accuracies.
+        /// </summary>
+        public StarDifficulty(DifficultyAttributes difficulty, PerformanceAttributes performance, PerformanceAttributes?[] performanceAtAccuracy)
+            : this(difficulty, performance)
+        {
+            PerformanceAttributesAtAccuracy = performanceAtAccuracy;
+        }
+
+        /// <summary>
         /// Creates a <see cref="StarDifficulty"/> structure.
         /// </summary>
         public StarDifficulty(DifficultyAttributes difficulty, PerformanceAttributes performance)
