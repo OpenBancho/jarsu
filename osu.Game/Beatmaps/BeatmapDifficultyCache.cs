@@ -24,6 +24,7 @@ using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Rulesets.UI;
 using osu.Game.Scoring;
+using osu.Game.Screens.Play;
 using osu.Game.Skinning;
 using osu.Game.Storyboards;
 
@@ -36,7 +37,26 @@ namespace osu.Game.Beatmaps
     public partial class BeatmapDifficultyCache : MemoryCachingComponent<BeatmapDifficultyCache.DifficultyCacheLookup, StarDifficulty?>
     {
         // Too many simultaneous updates can lead to stutters. One thread seems to work fine for song select display purposes.
-        private readonly ThreadedTaskScheduler updateScheduler = new ThreadedTaskScheduler(1, nameof(BeatmapDifficultyCache));
+        // It always takes the difficulty of the selected beatmap first, and it does not run at all while the local user is playing.
+        private readonly PrioritisedTaskScheduler updateScheduler;
+
+        // Timed attributes (the live performance display of gameplay and replays) are needed *during* play, so they must not wait behind the scheduler above.
+        private readonly ThreadedTaskScheduler timedUpdateScheduler = new ThreadedTaskScheduler(1, nameof(BeatmapDifficultyCache) + "Timed");
+
+        /// <summary>
+        /// The beatmap the user currently has selected. Its difficulty is worked on before anything else.
+        /// </summary>
+        private volatile BeatmapInfo? focusedBeatmap;
+
+        /// <summary>
+        /// The calculation the worker thread is busy with right now, if any.
+        /// </summary>
+        private volatile DifficultyJob? runningJob;
+
+        public BeatmapDifficultyCache()
+        {
+            updateScheduler = new PrioritisedTaskScheduler(nameof(BeatmapDifficultyCache), taskPriority);
+        }
 
         /// <summary>
         /// All bindables that should be updated along with the current ruleset + mods.
@@ -64,12 +84,30 @@ namespace osu.Game.Beatmaps
         [Resolved]
         private Bindable<IReadOnlyList<Mod>> currentMods { get; set; } = null!;
 
+        [Resolved]
+        private IBindable<WorkingBeatmap>? gameBeatmap { get; set; }
+
+        [Resolved]
+        private ILocalUserPlayInfo? localUserPlayInfo { get; set; }
+
+        private IBindable<LocalUserPlayingState>? playingState;
+
         private ModSettingChangeTracker? modSettingChangeTracker;
         private ScheduledDelegate? debouncedModSettingsChange;
 
         protected override void LoadComplete()
         {
             base.LoadComplete();
+
+            // Nothing is calculated while the user is playing: a calculation on another core still costs frame time and input latency.
+            if (localUserPlayInfo != null)
+            {
+                playingState = localUserPlayInfo.PlayingState.GetBoundCopy();
+                playingState.BindValueChanged(_ => updatePaused(), true);
+            }
+
+            // The beatmap the user opens jumps the queue, and cuts short the background work that is in its way.
+            gameBeatmap?.BindValueChanged(b => onFocusChanged(b.NewValue?.BeatmapInfo), true);
 
             currentRuleset.BindValueChanged(_ => Scheduler.AddOnce(updateTrackedBindables));
 
@@ -182,15 +220,26 @@ namespace osu.Game.Beatmaps
             return GetAsync(new DifficultyCacheLookup(localBeatmapInfo, localRulesetInfo, mods), cancellationToken, computationDelay);
         }
 
-        protected override Task<StarDifficulty?> ComputeValueAsync(DifficultyCacheLookup lookup, CancellationToken cancellationToken = default)
+        protected override async Task<StarDifficulty?> ComputeValueAsync(DifficultyCacheLookup lookup, CancellationToken cancellationToken = default)
         {
-            return Task.Factory.StartNew(() =>
+            while (true)
             {
-                if (CheckExists(lookup, out var existing))
-                    return existing;
+                var job = new DifficultyJob(lookup);
 
-                return computeDifficulty(lookup, cancellationToken);
-            }, cancellationToken, TaskCreationOptions.HideScheduler | TaskCreationOptions.RunContinuationsAsynchronously, updateScheduler);
+                var result = await Task.Factory.StartNew(state => runJob((DifficultyJob)state!, cancellationToken),
+                    job,
+                    cancellationToken,
+                    TaskCreationOptions.HideScheduler | TaskCreationOptions.RunContinuationsAsynchronously,
+                    updateScheduler).ConfigureAwait(false);
+
+                // The calculation was cut short to make way for something more urgent (or because gameplay started), not because its
+                // owner lost interest. Its result is still wanted: queue it again. It goes behind whatever interrupted it,
+                // and does not start until the scheduler is allowed to run.
+                if (job.WasPreempted && !cancellationToken.IsCancellationRequested)
+                    continue;
+
+                return result;
+            }
         }
 
         protected override bool CacheNullValues => false;
@@ -200,7 +249,84 @@ namespace osu.Game.Beatmaps
             return Task.Factory.StartNew(() => ruleset.CreateDifficultyCalculator(beatmap).CalculateTimed(mods, cancellationToken),
                 cancellationToken,
                 TaskCreationOptions.HideScheduler | TaskCreationOptions.RunContinuationsAsynchronously,
-                updateScheduler);
+                timedUpdateScheduler);
+        }
+
+        /// <summary>
+        /// Runs one calculation on the worker thread.
+        /// </summary>
+        private StarDifficulty? runJob(DifficultyJob job, CancellationToken cancellationToken)
+        {
+            if (CheckExists(job.Lookup, out var existing))
+                return existing;
+
+            using (var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, job.PreemptionSource.Token))
+            {
+                runningJob = job;
+
+                try
+                {
+                    var result = computeDifficulty(job.Lookup, linkedSource.Token);
+
+                    // computeDifficulty reports any cancellation as a null result. It was a preemption if that is what cancelled it.
+                    if (result == null && job.PreemptionSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        job.WasPreempted = true;
+
+                    return result;
+                }
+                finally
+                {
+                    runningJob = null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// How urgent a queued calculation is. Called by the scheduler each time it picks what to do next.
+        /// </summary>
+        private int taskPriority(Task task) => task.AsyncState is DifficultyJob job && isFocused(job.Lookup) ? 1 : 0;
+
+        private bool isFocused(DifficultyCacheLookup lookup)
+        {
+            var focus = focusedBeatmap;
+            return focus != null && lookup.BeatmapInfo.Equals(focus);
+        }
+
+        private void onFocusChanged(BeatmapInfo? beatmap)
+        {
+            focusedBeatmap = beatmap;
+
+            if (beatmap == null)
+                return;
+
+            // Already known: nothing to hurry for.
+            if (CheckExists(new DifficultyCacheLookup(beatmap, currentRuleset.Value, currentMods.Value), out _))
+                return;
+
+            // The scheduler will pick the selected beatmap next; this only stops it from waiting for a calculation of something else
+            // that happens to be running right now. That calculation is queued again afterwards.
+            preemptRunningJob(onlyIfNotFocused: true);
+        }
+
+        private void updatePaused()
+        {
+            bool playing = playingState != null && playingState.Value != LocalUserPlayingState.NotPlaying;
+
+            updateScheduler.Paused = playing;
+
+            // Whatever is running stops now (and is queued again for after the play), instead of finishing in the middle of it.
+            if (playing)
+                preemptRunningJob(onlyIfNotFocused: false);
+        }
+
+        private void preemptRunningJob(bool onlyIfNotFocused)
+        {
+            var job = runningJob;
+
+            if (job == null || (onlyIfNotFocused && isFocused(job.Lookup)))
+                return;
+
+            job.PreemptionSource.Cancel();
         }
 
         /// <summary>
@@ -366,6 +492,30 @@ namespace osu.Game.Beatmaps
 
             cancelTrackedBindableUpdate();
             updateScheduler.Dispose();
+            timedUpdateScheduler.Dispose();
+        }
+
+        /// <summary>
+        /// One queued or running calculation. Used by the scheduler to rank it, and to interrupt it.
+        /// </summary>
+        private sealed class DifficultyJob
+        {
+            public readonly DifficultyCacheLookup Lookup;
+
+            /// <summary>
+            /// Cancelled to stop this calculation without its owner having given up on it.
+            /// </summary>
+            public readonly CancellationTokenSource PreemptionSource = new CancellationTokenSource();
+
+            /// <summary>
+            /// Whether the calculation ended early because of <see cref="PreemptionSource"/>, and so has to be run again.
+            /// </summary>
+            public volatile bool WasPreempted;
+
+            public DifficultyJob(DifficultyCacheLookup lookup)
+            {
+                Lookup = lookup;
+            }
         }
 
         public readonly struct DifficultyCacheLookup : IEquatable<DifficultyCacheLookup>
