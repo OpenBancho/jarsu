@@ -38,6 +38,12 @@ namespace osu.Game.Overlays
 
         private readonly OnlineViewContainer onlineViewContainer;
         private readonly LoadingLayer loadingLayer;
+        private readonly ProfileBackground profileBackground;
+
+        /// <summary>
+        /// The colour of the page behind the profile, taken from the player's secondary colour. Null uses the overlay's own.
+        /// </summary>
+        private Color4? secondaryBackgroundColour;
 
         private ProfileSection? lastSection;
         private ProfileSection[]? sections;
@@ -56,16 +62,20 @@ namespace osu.Game.Overlays
         public UserProfileOverlay()
             : base(OverlayColourScheme.Pink)
         {
-            base.Content.Add(new PopoverContainer
+            base.Content.AddRange(new Drawable[]
             {
-                RelativeSizeAxes = Axes.Both,
-                Children = new Drawable[]
+                profileBackground = new ProfileBackground(),
+                new PopoverContainer
                 {
-                    onlineViewContainer = new OnlineViewContainer($"Sign in to view the {Header.Title.Title}")
+                    RelativeSizeAxes = Axes.Both,
+                    Children = new Drawable[]
                     {
-                        RelativeSizeAxes = Axes.Both
-                    },
-                    loadingLayer = new LoadingLayer(true)
+                        onlineViewContainer = new OnlineViewContainer($"Sign in to view the {Header.Title.Title}")
+                        {
+                            RelativeSizeAxes = Axes.Both
+                        },
+                        loadingLayer = new LoadingLayer(true)
+                    }
                 }
             });
         }
@@ -83,7 +93,7 @@ namespace osu.Game.Overlays
 
         protected override ProfileHeader CreateHeader() => new ProfileHeader();
 
-        protected override Color4 BackgroundColour => ColourProvider.Background5;
+        protected override Color4 BackgroundColour => secondaryBackgroundColour ?? ColourProvider.Background5;
 
         public void ShowUser(IUser userToShow, IRulesetInfo? userRuleset = null)
         {
@@ -124,7 +134,13 @@ namespace osu.Game.Overlays
                 : Array.Empty<ProfileSection>();
 
             if (!sameUser)
+            {
+                // Nothing of the previous profile's look may linger while the next one loads.
+                secondaryBackgroundColour = null;
+                profileBackground.SetUrl(null);
                 changeOverlayColours(OverlayColourScheme.Pink.GetHue());
+                UpdateColours();
+            }
 
             recreateBaseContent();
 
@@ -145,8 +161,21 @@ namespace osu.Game.Overlays
             // reuse header and content if same colour scheme, otherwise recreate both.
             int profileHue = loadedUser.ProfileHue ?? OverlayColourScheme.Pink.GetHue();
 
-            if (changeOverlayColours(profileHue))
+            // The primary colour of the profile (profile_hue, derived from it by the server) drives the whole overlay
+            // scheme above; the secondary colour tints the page behind it, and the background picture goes under both.
+            Color4? newSecondary = secondaryColourOf(loadedUser.ColourSecondary);
+            bool secondaryChanged = newSecondary != secondaryBackgroundColour;
+            secondaryBackgroundColour = newSecondary;
+
+            bool hueChanged = changeOverlayColours(profileHue);
+
+            if (secondaryChanged)
+                UpdateColours();
+
+            if (hueChanged || secondaryChanged)
                 recreateBaseContent();
+
+            profileBackground.SetUrl(loadedUser.CustomBackgroundUrl);
 
             var actualRuleset = rulesets.GetRuleset(userRuleset?.ShortName ?? loadedUser.PlayMode).AsNonNull();
 
@@ -220,6 +249,43 @@ namespace osu.Game.Overlays
                     sectionsContainer.ScrollTo(lastSection);
                 }
             };
+        }
+
+        /// <summary>
+        /// The dark page colour for a #rrggbb secondary colour, or null when there is none or it is malformed.
+        /// </summary>
+        private static Color4? secondaryColourOf(string? hex)
+        {
+            if (string.IsNullOrEmpty(hex) || hex.Length != 7 || hex[0] != '#')
+                return null;
+
+            if (!int.TryParse(hex.AsSpan(1), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int rgb))
+                return null;
+
+            float r = ((rgb >> 16) & 0xFF) / 255f;
+            float g = ((rgb >> 8) & 0xFF) / 255f;
+            float b = (rgb & 0xFF) / 255f;
+            float max = Math.Max(r, Math.Max(g, b));
+            float d = max - Math.Min(r, Math.Min(g, b));
+
+            float hue = 0;
+
+            if (d > 0)
+            {
+                if (max == r)
+                    hue = ((g - b) / d + 6) % 6;
+                else if (max == g)
+                    hue = (b - r) / d + 2;
+                else
+                    hue = (r - g) / d + 4;
+
+                hue *= 60;
+            }
+
+            // The same dark, quiet surface the overlay uses for its own background, just in the player's hue.
+            var provider = new OverlayColourProvider(OverlayColourScheme.Pink);
+            provider.ChangeColourScheme((int)Math.Round(hue));
+            return provider.Background5;
         }
 
         private bool changeOverlayColours(int hue)

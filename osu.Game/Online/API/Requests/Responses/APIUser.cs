@@ -64,6 +64,20 @@ namespace osu.Game.Online.API.Requests.Responses
         [JsonProperty(@"profile_colour")]
         public string Colour;
 
+        /// <summary>
+        /// The colour of the profile's panels (#rrggbb), chosen by the player on the website. Null when none was picked.
+        /// </summary>
+        [JsonProperty(@"profile_colour_secondary")]
+        [CanBeNull]
+        public string ColourSecondary;
+
+        /// <summary>
+        /// The page background the player uploaded on the website. Null when they have none.
+        /// </summary>
+        [JsonProperty(@"custom_background_url")]
+        [CanBeNull]
+        public string CustomBackgroundUrl;
+
         [JsonProperty(@"avatar_url")]
         public string AvatarUrl;
 
