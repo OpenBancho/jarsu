@@ -36,6 +36,12 @@ namespace osu.Game.Security
         private static MethodInfo? canSubmitScoreMethod;
         private static MethodInfo? submitScoreMethod;
         private static MethodInfo? getLoginTicketMethod;
+
+        // Play telemetry (anticheat.dll 1.9.0+): null with an older module, and then nothing is sent.
+        private static Action<long, int, string, int, string>? playBegin;
+        private static Action<double, float, float, int>? playFrame;
+        private static Action<string>? playState;
+        private static Action<long>? playEnd;
         private static bool hasNotified;
         private static volatile bool loadFinished;
         private static FileStream? dllGuard;
@@ -215,6 +221,12 @@ namespace osu.Game.Security
                     submitScoreMethod = moduleType?.GetMethod("SubmitScore", BindingFlags.Public | BindingFlags.Static);
                     getLoginTicketMethod = moduleType?.GetMethod("GetLoginTicket", BindingFlags.Public | BindingFlags.Static);
 
+                    // Frames arrive hundreds of times per second: these are bound as delegates, not invoked through reflection.
+                    playBegin = bind<Action<long, int, string, int, string>>(moduleType, "PlayBegin");
+                    playFrame = bind<Action<double, float, float, int>>(moduleType, "PlayFrame");
+                    playState = bind<Action<string>>(moduleType, "PlayState");
+                    playEnd = bind<Action<long>>(moduleType, "PlayEnd");
+
                     Logger.Log("Anti-cheat module loaded and signature verified successfully.", LoggingTarget.Runtime, LogLevel.Debug);
                 }
                 else
@@ -231,6 +243,81 @@ namespace osu.Game.Security
             if (dllExists)
                 Logger.Log("anticheat.dll detected in non-strict client; ignoring.", LoggingTarget.Runtime, LogLevel.Debug);
 #endif
+        }
+
+        private static T? bind<T>(Type? moduleType, string name) where T : Delegate
+        {
+            try
+            {
+                var method = moduleType?.GetMethod(name, BindingFlags.Public | BindingFlags.Static);
+                return method == null ? null : (T)Delegate.CreateDelegate(typeof(T), method);
+            }
+            catch
+            {
+                return null; // an older module with another signature
+            }
+        }
+
+        private static bool telemetryActive => IsStrictBuild && serverMode == ServerMode.Strict && IsAntiCheatLoaded;
+
+        /// <summary>A play that will be submitted has started. The module records it next to what the input devices do.</summary>
+        public static void PlayBegin(long tokenId, int beatmapId, string beatmapMd5, int rulesetId, string modsJson)
+        {
+            if (!telemetryActive)
+                return;
+
+            try
+            {
+                playBegin?.Invoke(tokenId, beatmapId, beatmapMd5, rulesetId, modsJson);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[AntiCheatClient] Play telemetry could not start: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
+            }
+        }
+
+        /// <summary>One recorded replay frame (legacy form). Called for every frame: must stay cheap.</summary>
+        public static void PlayFrame(double time, float x, float y, int buttons)
+        {
+            if (!telemetryActive)
+                return;
+
+            try
+            {
+                playFrame?.Invoke(time, x, y, buttons);
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>The game's own state during the play (a JSON object), see SubmittingPlayer.</summary>
+        public static void PlayState(string json)
+        {
+            if (!telemetryActive)
+                return;
+
+            try
+            {
+                playState?.Invoke(json);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void PlayEnd(long tokenId)
+        {
+            if (!telemetryActive)
+                return;
+
+            try
+            {
+                playEnd?.Invoke(tokenId);
+            }
+            catch
+            {
+            }
         }
 
         private static void loadAndNotify(INotificationOverlay notifications)
@@ -275,7 +362,9 @@ namespace osu.Game.Security
                 }
             }
 
-            // Check for optional test/audit payload (test-cheat.dll)
+#if DEBUG
+            // Optional test/audit payload (test-cheat.dll). Debug builds only: a release build must never load code from a
+            // file a player can drop into the game folder.
             string testCheatDllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "test-cheat.dll");
             if (File.Exists(testCheatDllPath))
             {
@@ -294,6 +383,7 @@ namespace osu.Game.Security
                     Logger.Log($"Failed to initialize test-cheat.dll: {ex.Message}", LoggingTarget.Runtime, LogLevel.Error);
                 }
             }
+#endif
         }
 
         /// <summary>

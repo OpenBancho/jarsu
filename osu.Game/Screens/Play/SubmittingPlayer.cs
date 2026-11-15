@@ -190,6 +190,58 @@ namespace osu.Game.Screens.Play
             }
         }
 
+        [Resolved]
+        private osu.Framework.Platform.GameHost host { get; set; }
+
+        private double lastAntiCheatState;
+
+        protected override void Update()
+        {
+            base.Update();
+
+            // Every two seconds of a play that will be submitted, the anti-cheat module is told what the game itself believes:
+            // how fast the gameplay clock runs, whether a replay drives the input, and which input handlers exist. The
+            // anti-cheat server compares it with the mods of the score and with its own clock.
+            if (token == null || DrawableRuleset == null || GameplayClockContainer == null || Time.Current - lastAntiCheatState < 2000)
+                return;
+
+            lastAntiCheatState = Time.Current;
+
+            if (GameplayClockContainer.IsPaused.Value)
+                return;
+
+            try
+            {
+                bool tablet = statics.Get<bool>(Static.TouchInputActive);
+                var handlers = new Newtonsoft.Json.Linq.JArray();
+
+                foreach (var handler in host.AvailableInputHandlers)
+                {
+                    string assembly = handler.GetType().Assembly.GetName().Name ?? string.Empty;
+
+                    if (!handlers.Any(h => (string)h == assembly))
+                        handlers.Add(assembly);
+
+                    if (handler is osu.Framework.Input.Handlers.Tablet.ITabletHandler tabletHandler && handler.Enabled.Value && tabletHandler.Tablet.Value != null)
+                        tablet = true;
+                }
+
+                var state = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["rate"] = Math.Round(GameplayClockContainer.GetTrueGameplayRate(), 4),
+                    ["replay"] = DrawableRuleset.HasReplayLoaded.Value,
+                    ["tablet"] = tablet,
+                    ["handlers"] = handlers,
+                };
+
+                Security.AntiCheatClient.PlayState(state.ToString(Newtonsoft.Json.Formatting.None));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Anti-cheat state probe failed: {ex.Message}", LoggingTarget.Runtime, LogLevel.Debug);
+            }
+        }
+
         protected override async Task PrepareScoreForResultsAsync(Score score)
         {
             await base.PrepareScoreForResultsAsync(score).ConfigureAwait(false);

@@ -215,6 +215,13 @@ namespace osu.Game.Online.Spectator
 
                 setStateForScore(scoreToken, state, score);
 
+                // The anti-cheat module records the same frames the spectators get, next to the raw input of the devices.
+                if (scoreToken != null)
+                {
+                    Security.AntiCheatClient.PlayBegin(scoreToken.Value, score.ScoreInfo.BeatmapInfo!.OnlineID, score.ScoreInfo.BeatmapInfo!.MD5Hash,
+                        score.ScoreInfo.RulesetID, Newtonsoft.Json.JsonConvert.SerializeObject(currentState.Mods));
+                }
+
                 BeginPlayingInternal(currentScoreToken, currentState).ContinueWith(t =>
                 {
                     bool success = t.GetResultSafely();
@@ -254,6 +261,9 @@ namespace osu.Game.Online.Spectator
 
                 var convertedFrame = convertible.ToLegacy(currentBeatmap);
 
+                if (currentScoreToken != null)
+                    Security.AntiCheatClient.PlayFrame(convertedFrame.Time, convertedFrame.MouseX ?? 0, convertedFrame.MouseY ?? 0, (int)convertedFrame.ButtonState);
+
                 // this reduces redundancy of frames in the resulting replay.
                 // it is also done at `ReplayRecorder`, but needs to be done here as well
                 // due to the flow being handled differently.
@@ -278,6 +288,9 @@ namespace osu.Game.Online.Spectator
 
                 if (pendingFrames.Count > 0)
                     purgePendingFrames();
+
+                if (currentScoreToken != null)
+                    Security.AntiCheatClient.PlayEnd(currentScoreToken.Value);
 
                 clearScoreState();
 
